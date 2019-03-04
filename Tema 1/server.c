@@ -8,14 +8,7 @@
 
 #define PORT 8080
 #define BACKLOG 5
-#define BUFFER_SIZE 65435
-
-typedef struct frame
-{
-    int sq_no;
-    int ack;
-    char buffer[BUFFER_SIZE];
-} Frame;
+#define BUFFER_SIZE 1024
 
 void error(const char *msg)
 {
@@ -23,13 +16,14 @@ void error(const char *msg)
     exit(1);
 }
 
-void tcp(int sockfd)
+void tcp(int sockfd, int isSaw)
 {
     socklen_t clilen;
     struct sockaddr_in cli_addr;
-    int newsockfd, read_return;
+    int newsockfd, return_value;
     long nr_mesages = 0, nr_bytes = 0;
     char buffer[BUFFER_SIZE];
+    char* ack = "ack";
 
     if (listen(sockfd, BACKLOG) < 0)
         error("ERROR on listening");
@@ -42,13 +36,20 @@ void tcp(int sockfd)
     while (1)
     {
         bzero(buffer, BUFFER_SIZE);
-        if ((read_return = read(newsockfd, buffer, BUFFER_SIZE)) < 0)
+        if ((return_value = read(newsockfd, buffer, BUFFER_SIZE)) < 0)
             error("ERROR reading from socket");
-        if (read_return == 0)
+
+        if (strcmp(buffer, "STOP") == 0)
             break;
 
+        if (isSaw)
+        {
+            if (write(newsockfd, ack, strlen(ack)) < 0)
+                error("ERROR writting to socket");
+        }
+
         nr_mesages++;
-        nr_bytes += read_return;
+        nr_bytes += return_value;
     }
 
     close(newsockfd);
@@ -58,57 +59,33 @@ void tcp(int sockfd)
     printf("Number of bytes read: %ld\n", nr_bytes);
 }
 
-void udp(int sockfd, int is_stream)
+void udp(int sockfd, int isSaw)
 {
     struct sockaddr_in cli_addr;
-    int read_return, cli_addr_len;
+    int return_value, cli_addr_len;
     long nr_mesages = 0, nr_bytes = 0;
     char buffer[BUFFER_SIZE];
+    char* ack = "ack";
 
-    int frame_id = 0;
-    Frame frame_send, frame_recv;
-
-    if (is_stream)
+    while (1)
     {
-        while (1)
+        bzero(buffer, BUFFER_SIZE);
+        if ((return_value = recvfrom(sockfd, (char *)buffer, BUFFER_SIZE, MSG_WAITALL, (struct sockaddr *)&cli_addr, &cli_addr_len)) < 0)
+            error("ERROR reading from socket");
+
+        if (strcmp(buffer, "STOP") == 0)
+            break;
+
+        if (isSaw)
         {
-            bzero(buffer, BUFFER_SIZE);
-            if ((read_return = recvfrom(sockfd, (char *)buffer, BUFFER_SIZE, MSG_WAITALL, (struct sockaddr *)&cli_addr, &cli_addr_len)) < 0)
-                error("ERROR reading from socket");
-            
-            if(strcmp(buffer, "STOP") == 0)
-                break;
-
-            nr_mesages++;
-            nr_bytes += read_return;
+            if ((return_value = sendto(sockfd, ack, strlen(ack), MSG_CONFIRM, (const struct sockaddr *)&cli_addr, cli_addr_len)) < 0)
+                error("ERROR writing to socket");
         }
+
+        nr_mesages++;
+        nr_bytes += return_value;
     }
-    else
-    {
-        while (1)
-        {
-            read_return = recvfrom(sockfd, &frame_recv, sizeof(Frame), MSG_WAITALL, (struct sockaddr *)&cli_addr, &cli_addr_len);
-            if (read_return > 0 && frame_recv.sq_no == frame_id)
-            {
-                frame_send.sq_no = 0;
-                frame_send.ack = frame_recv.sq_no + 1;
-                bzero(frame_send.buffer, BUFFER_SIZE);
-
-                if (sendto(sockfd, (const char *)&frame_send, sizeof(Frame), MSG_CONFIRM, (struct sockaddr *)&cli_addr, cli_addr_len) < 0)
-                    error("ERROR sending to socket");
-
-                printf("ACK Sent\n");
-            }
-            else
-            {
-                printf("PCK not received \n");
-            }
-            frame_id++;
-
-            nr_mesages++;
-            nr_bytes += read_return;
-        }
-    }
+    recvfrom(sockfd, (char *)buffer, BUFFER_SIZE, MSG_WAITALL, (struct sockaddr *)&cli_addr, &cli_addr_len);
 
     printf("Used protocol: UDP\n");
     printf("Number of messages read: %ld\n", nr_mesages);
@@ -118,7 +95,7 @@ void udp(int sockfd, int is_stream)
 int main(int argc, char *argv[])
 {
     struct sockaddr_in serv_addr;
-    int sockfd, isTcp, isStream;
+    int sockfd, isTcp, isSaw;
 
     if (argc < 3 || (strcasecmp(argv[1], "tcp") != 0 && strcasecmp(argv[1], "udp") != 0) || (strcasecmp(argv[2], "stream") != 0 && strcasecmp(argv[2], "saw") != 0))
     {
@@ -127,7 +104,7 @@ int main(int argc, char *argv[])
     }
 
     isTcp = strcasecmp(argv[1], "tcp") == 0;
-    isStream = strcasecmp(argv[2], "stream") == 0;
+    isSaw = strcasecmp(argv[2], "saw") == 0;
 
     sockfd = socket(AF_INET, isTcp ? SOCK_STREAM : SOCK_DGRAM, 0);
     if (sockfd < 0)
@@ -142,9 +119,9 @@ int main(int argc, char *argv[])
         error("ERROR on binding");
 
     if (isTcp)
-        tcp(sockfd);
+        tcp(sockfd, isSaw);
     else
-        udp(sockfd, isStream);
+        udp(sockfd, isSaw);
 
     close(sockfd);
 

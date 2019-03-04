@@ -13,14 +13,7 @@
 
 #define HOST "127.0.0.1"
 #define PORT 8080
-#define BUFFER_SIZE 65435
-
-typedef struct frame
-{
-    int sq_no;
-    int ack;
-    char buffer[BUFFER_SIZE];
-} Frame;
+#define BUFFER_SIZE 1024
 
 void error(const char *msg)
 {
@@ -28,9 +21,9 @@ void error(const char *msg)
     exit(0);
 }
 
-void tcp(char *filename)
+void tcp(char *filename, int isSaw)
 {
-    int sockfd, filefd, read_return;
+    int sockfd, filefd, return_value;
     long nr_mesages = 0, nr_bytes = 0;
     struct sockaddr_in serv_addr;
     struct hostent *server;
@@ -65,16 +58,26 @@ void tcp(char *filename)
     while (1)
     {
         bzero(buffer, BUFFER_SIZE);
-        if ((read_return = read(filefd, buffer, BUFFER_SIZE)) < 0)
+        if ((return_value = read(filefd, buffer, BUFFER_SIZE)) < 0)
             error("ERROR readind from file");
-        if (read_return == 0)
+        if (return_value == 0)
             break;
-        if (write(sockfd, buffer, strlen(buffer)) < 0)
+        if ((return_value = write(sockfd, buffer, strlen(buffer))) < 0)
             error("ERROR writing to socket");
 
+        if (isSaw)
+        {
+            bzero(buffer, BUFFER_SIZE);
+            if (read(sockfd, buffer, BUFFER_SIZE) < 0)
+                error("ERROR reading from socket");
+        }
+
         nr_mesages++;
-        nr_bytes += read_return;
+        nr_bytes += return_value;
     }
+    strcpy(buffer, "STOP");
+    write(sockfd, buffer, strlen(buffer));
+
     end_time = clock();
 
     close(sockfd);
@@ -85,16 +88,13 @@ void tcp(char *filename)
     printf("Number of bytes sent: %ld\n", nr_bytes);
 }
 
-void udp(char *filename, int is_stream)
+void udp(char *filename, int isSaw)
 {
-    int sockfd, filefd, read_return, len;
+    int sockfd, filefd, return_value, len;
     long nr_mesages = 0, nr_bytes = 0;
     struct sockaddr_in serv_addr;
     char buffer[BUFFER_SIZE];
     clock_t begin_time, end_time;
-
-    int frame_id = 0, ack_recv = 1;
-    Frame frame_send, frame_recv;
 
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0)
@@ -111,59 +111,30 @@ void udp(char *filename, int is_stream)
     }
 
     begin_time = clock();
-    if (is_stream)
+
+    while (1)
     {
-        while (1)
+        bzero(buffer, BUFFER_SIZE);
+        if ((return_value = read(filefd, buffer, BUFFER_SIZE)) < 0)
+            error("ERROR readind from file");
+        if (return_value == 0)
+            break;
+        if ((return_value = sendto(sockfd, buffer, strlen(buffer), MSG_CONFIRM, (const struct sockaddr *)&serv_addr, sizeof(serv_addr))) < 0)
+            error("ERROR writing to socket");
+
+        if (isSaw)
         {
             bzero(buffer, BUFFER_SIZE);
-            if ((read_return = read(filefd, buffer, BUFFER_SIZE)) < 0)
-                error("ERROR readind from file");
-            if (read_return == 0)
-                break;
-            if (sendto(sockfd, buffer, strlen(buffer), MSG_CONFIRM, (const struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-                error("ERROR writing to socket");
-
-            nr_mesages++;
-            nr_bytes += read_return;
+            if ((recvfrom(sockfd, (char *)buffer, BUFFER_SIZE, MSG_WAITALL, (struct sockaddr *)&serv_addr, &len)) < 0)
+                error("ERROR reading from socket");
         }
-        strcpy(buffer, "STOP");
-        sendto(sockfd, buffer, strlen(buffer), MSG_CONFIRM, (const struct sockaddr *)&serv_addr, sizeof(serv_addr));
+
+        nr_mesages++;
+        nr_bytes += return_value;
     }
-    else
-    {
-        while (1)
-        {
-            if (ack_recv == 1)
-            {
-                frame_send.sq_no = frame_id;
-                frame_send.ack = 0;
+    strcpy(buffer, "STOP");
+    sendto(sockfd, buffer, strlen(buffer), MSG_CONFIRM, (const struct sockaddr *)&serv_addr, sizeof(serv_addr));
 
-                if ((read_return = read(filefd, frame_send.buffer, BUFFER_SIZE)) < 0)
-                    error("ERROR readind from file");
-                if (read_return == 0)
-                    break;
-
-                sendto(sockfd, &frame_send, sizeof(Frame), MSG_CONFIRM, (struct sockaddr *)&serv_addr, sizeof(serv_addr));
-            }
-
-            len = sizeof(serv_addr);
-            read_return = recvfrom(sockfd, &frame_recv, sizeof(Frame), MSG_WAITALL, (struct sockaddr *)&serv_addr, &len);
-
-            if (read_return > 0 && frame_recv.sq_no == 0 && frame_recv.ack == frame_id + 1)
-            {
-                ack_recv = 1;
-                printf("ACK received\n");
-            }
-            else
-            {
-                ack_recv = 0;
-                printf("ACK not received\n");
-            }
-
-            nr_mesages++;
-            nr_bytes += read_return;
-        }
-    }
     end_time = clock();
 
     close(sockfd);
@@ -178,7 +149,7 @@ void udp(char *filename, int is_stream)
 
 int main(int argc, char *argv[])
 {
-    int isTcp, isStream;
+    int isTcp, isSaw;
 
     if (argc < 3 || (strcasecmp(argv[1], "tcp") != 0 && strcasecmp(argv[1], "udp") != 0) || (strcasecmp(argv[2], "stream") != 0 && strcasecmp(argv[2], "saw") != 0))
     {
@@ -187,13 +158,13 @@ int main(int argc, char *argv[])
     }
 
     isTcp = strcasecmp(argv[1], "tcp") == 0;
-    isStream = strcasecmp(argv[2], "stream") == 0;
+    isSaw = strcasecmp(argv[2], "saw") == 0;
 
     if (isTcp)
-        tcp(argv[3]);
+        tcp(argv[3], isSaw);
     else
     {
-        udp(argv[3], isStream);
+        udp(argv[3], isSaw);
     }
 
     return 0;
